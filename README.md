@@ -61,5 +61,7 @@ Example of logging with log4j, logs are directly push to cloud.iO thanks to the 
 
 ### [reactivity](https://github.com/lucblender/cloudio-endpointExample-java/tree/master/src/main/java/reactivity)
 
-Code example 
+Will send @update regularly subscribe to the same and do rest request on notify attribute change to compute the delay of time for the message to come to the cloud and come back.
+
+After a few message, will stop, compute the min, max, mean and standard deviation of the measured times and also output two histograms of those delays. 
 

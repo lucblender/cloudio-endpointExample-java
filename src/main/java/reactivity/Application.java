@@ -8,10 +8,14 @@ import okhttp3.Credentials;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import org.apache.commons.math3.stat.Frequency;
 import org.json.JSONObject;
+import org.knowm.xchart.CategoryChart;
+import org.knowm.xchart.CategoryChartBuilder;
+import org.knowm.xchart.SwingWrapper;
+import org.knowm.xchart.style.Styler;
 
-import java.util.LinkedList;
-import java.util.List;
+import java.util.*;
 
 // This code send @update regularly and has a mqtt and http listener of its update and measure the delta time between
 // the sending of mqtt message and the delivery of mqtt or http message.
@@ -22,6 +26,12 @@ public class Application {
     static final String URL = "http://localhost:8081/api/v1/notifyAttributeChange/" +
             "bc0f1bf8-bdae-11e9-9cb5-2a2ae2dbcce4.demoNode.demoObject.demoMeasure/1000";
     static final int requestsNb = 500;
+
+    static final int classWidthMqtt = 1;
+    static final int classWidthHttp = 2;
+
+    static private Map distributionMapMqtt = new TreeMap();
+    static private Map distributionMapHttp = new TreeMap();
 
     public static void main(String[] args) {
 
@@ -88,6 +98,59 @@ public class Application {
             double stdvHttp = 0;
             double stdvMqtt = 0;
 
+            Frequency frequencyMqtt = new Frequency();
+            Frequency frequencyHttp = new Frequency();
+
+            mqttSet.forEach(d -> frequencyMqtt.addValue(d));
+            httpSet.forEach(d -> frequencyHttp.addValue(d));
+
+            mqttSet.stream()
+                    .map(d -> Double.parseDouble(d.toString()))
+                    .distinct()
+                    .forEach(observation -> {
+                        long observationFrequency = frequencyMqtt.getCount(observation);
+                        int upperBoundary = (observation > classWidthMqtt)
+                                ? Math.multiplyExact( (int) Math.ceil(observation / classWidthMqtt), classWidthMqtt)
+                                : classWidthMqtt;
+                        int lowerBoundary = (upperBoundary > classWidthMqtt)
+                                ? Math.subtractExact(upperBoundary, classWidthMqtt)
+                                : 0;
+                        String bin = String.format("%03d", lowerBoundary) + "-" + String.format("%03d", upperBoundary);
+
+                        updateDistributionMap(distributionMapMqtt, lowerBoundary, bin, observationFrequency, classWidthMqtt);
+                    });
+
+            httpSet.stream()
+                    .map(d -> Double.parseDouble(d.toString()))
+                    .distinct()
+                    .forEach(observation -> {
+                        long observationFrequency = frequencyHttp.getCount(observation);
+                        int upperBoundary = (observation > classWidthHttp)
+                                ? Math.multiplyExact( (int) Math.ceil(observation / classWidthHttp), classWidthHttp)
+                                : classWidthHttp;
+                        int lowerBoundary = (upperBoundary > classWidthHttp)
+                                ? Math.subtractExact(upperBoundary, classWidthHttp)
+                                : 0;
+                        String bin = String.format("%03d", lowerBoundary) + "-" + String.format("%03d", upperBoundary);
+
+                        updateDistributionMap(distributionMapHttp, lowerBoundary, bin, observationFrequency, classWidthHttp);
+                    });
+
+            CategoryChart chartMQTT = chartBuilder("MQTT to MQTT time distribution");
+            CategoryChart chartHTTP = chartBuilder("MQTT to HTTP time distribution");
+
+
+            List yData = new ArrayList();
+            yData.addAll(distributionMapMqtt.values());
+            chartMQTT.addSeries("MQTT to MQTT", Arrays.asList(distributionMapMqtt.keySet().toArray()), yData);
+
+            yData = new ArrayList();
+            yData.addAll(distributionMapHttp.values());
+            chartHTTP.addSeries("MQTT to HTTP", Arrays.asList(distributionMapHttp.keySet().toArray()), yData);
+
+            new SwingWrapper<>(chartMQTT).displayChart();
+            new SwingWrapper<>(chartHTTP).displayChart();
+
             for (int i = 0; i < mqttSet.size(); i++) {
                 sumMqtt += mqttSet.get(i);
                 sumHttp += httpSet.get(i);
@@ -120,5 +183,33 @@ public class Application {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private static void updateDistributionMap(Map distributionMap, int lowerBoundary, String bin, long observationFrequency, int classWidth) {
+        int prevLowerBoundary = (lowerBoundary > classWidth) ? lowerBoundary - classWidth : 0;
+        String prevBin = String.format("%03d", prevLowerBoundary) + "-" + String.format("%03d", lowerBoundary) ;
+        if(!distributionMap.containsKey(prevBin))
+            distributionMap.put(prevBin, 0);
+
+        if(!distributionMap.containsKey(bin)) {
+            distributionMap.put(bin, observationFrequency);
+        }
+        else {
+            long oldFrequency = Long.parseLong(distributionMap.get(bin).toString());
+            distributionMap.replace(bin, oldFrequency + observationFrequency);
+        }
+    }
+
+    private static CategoryChart chartBuilder(String title){
+        CategoryChart chart = new CategoryChartBuilder().width(800).height(600)
+                .title(title)
+                .xAxisTitle("Time group [ms]")
+                .yAxisTitle("Frequency")
+                .build();
+
+        chart.getStyler().setLegendPosition(Styler.LegendPosition.InsideNW);
+        chart.getStyler().setAvailableSpaceFill(0.99);
+        chart.getStyler().setOverlapped(true);
+        return chart;
     }
 }
