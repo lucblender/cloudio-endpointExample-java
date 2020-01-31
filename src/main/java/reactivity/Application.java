@@ -15,6 +15,8 @@ import org.knowm.xchart.CategoryChartBuilder;
 import org.knowm.xchart.SwingWrapper;
 import org.knowm.xchart.style.Styler;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.*;
 
 // This code send @update regularly and has a mqtt and http listener of its update and measure the delta time between
@@ -25,13 +27,13 @@ public class Application {
     static CloudioEndpoint myEndpoint;
     static final String URL = "http://localhost:8081/api/v1/notifyAttributeChange/" +
             "bc0f1bf8-bdae-11e9-9cb5-2a2ae2dbcce4.demoNode.demoObject.demoMeasure/1000";
-    static final int requestsNb = 500;
+    static final int requestsNb = 50;
 
     static final int classWidthMqtt = 1;
     static final int classWidthHttp = 2;
 
-    static private Map distributionMapMqtt = new TreeMap();
-    static private Map distributionMapHttp = new TreeMap();
+    static private Map distributionMapMqtt = new LinkedHashMap();
+    static private Map distributionMapHttp = new LinkedHashMap();
 
     public static void main(String[] args) {
 
@@ -52,28 +54,28 @@ public class Application {
             demoNode.demoObject.demoMeasure.addListener(new CloudioAttributeListener() {
                 @Override
                 public void attributeHasChanged(CloudioAttribute attribute) {
-                    double time = System.currentTimeMillis();
-                    System.out.println("demoMeasure retrieved via mqtt in " +
-                            (time - (double) attribute.getValue()) + "ms");
+                    double time = System.nanoTime() / 1000_000.0;
+                    double delay = round(time - (double) attribute.getValue(), 3);
+                    System.out.println("demoMeasure retrieved via mqtt in " + delay + "ms");
                     if (mqttSet.size() < requestsNb)
-                        mqttSet.add((time - (double) attribute.getValue()));
+                        mqttSet.add(delay);
                 }
             });
 
+
             Thread httpRequestThread = new Thread(() -> {
-                while (true) {
+                while (httpSet.size() < requestsNb) {
                     OkHttpClient httpClient = new OkHttpClient();
                     String credential = Credentials.basic("root", "123456");
                     Request request = new Request.Builder().url(URL).header("Authorization", credential).build();
                     try {
                         Response response = httpClient.newCall(request).execute();
-                        double time = System.currentTimeMillis();
+                        double time = System.nanoTime() / 1000_000.0;
                         JSONObject jsonBody = new JSONObject(response.body().string());
                         double value = jsonBody.getDouble("value");
-                        System.out.println("demoMeasure retrieved via http in " +
-                                (time - value) + "ms");
-                        if (httpSet.size() < requestsNb)
-                            httpSet.add((time - value));
+                        double delay = round(time - value, 3);
+                        System.out.println("demoMeasure retrieved via http in " + delay + "ms");
+                        httpSet.add(delay);
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
@@ -82,63 +84,51 @@ public class Application {
             httpRequestThread.start();
 
             while (!(httpSet.size() == requestsNb && mqttSet.size() == requestsNb)) {
-                demoNode.demoObject.demoMeasure.setValue((double) System.currentTimeMillis());
+                demoNode.demoObject.demoMeasure.setValue((double) System.nanoTime() / 1000_000.0);
                 Thread.sleep(1000);
             }
-
-            double sumMqtt = 0;
-            double sumHttp = 0;
-
-            double maxHttp = 0;
-            double maxMqtt = 0;
-
-            double minHttp = 0;
-            double minMqtt = 0;
-
-            double stdvHttp = 0;
-            double stdvMqtt = 0;
 
             Frequency frequencyMqtt = new Frequency();
             Frequency frequencyHttp = new Frequency();
 
+            Collections.sort(httpSet);
+            Collections.sort(mqttSet);
+
+            double sumMqtt = 0;
+            double sumHttp = 0;
+
+            double minHttp = httpSet.get(0);
+            double minMqtt = mqttSet.get(0);
+
+            double maxHttp = httpSet.get(httpSet.size() - 1);
+            double maxMqtt = mqttSet.get(mqttSet.size() - 1);
+
+            double stdvHttp = 0;
+            double stdvMqtt = 0;
+
+
             mqttSet.forEach(d -> frequencyMqtt.addValue(d));
             httpSet.forEach(d -> frequencyHttp.addValue(d));
 
+            //Uncomment to  fill bins with '0' and have correct spacing
+            //commented to reduce the size of graphs
+            //initDistributionMap((int)minHttp, (int)maxHttp, classWidthHttp, distributionMapHttp);
+            //initDistributionMap((int)minMqtt, (int)maxMqtt, classWidthMqtt, distributionMapMqtt);
+
             mqttSet.stream()
-                    .map(d -> Double.parseDouble(d.toString()))
                     .distinct()
                     .forEach(observation -> {
-                        long observationFrequency = frequencyMqtt.getCount(observation);
-                        int upperBoundary = (observation > classWidthMqtt)
-                                ? Math.multiplyExact( (int) Math.ceil(observation / classWidthMqtt), classWidthMqtt)
-                                : classWidthMqtt;
-                        int lowerBoundary = (upperBoundary > classWidthMqtt)
-                                ? Math.subtractExact(upperBoundary, classWidthMqtt)
-                                : 0;
-                        String bin = String.format("%03d", lowerBoundary) + "-" + String.format("%03d", upperBoundary);
-
-                        updateDistributionMap(distributionMapMqtt, lowerBoundary, bin, observationFrequency, classWidthMqtt);
+                        updateDistributionMap(distributionMapMqtt, frequencyMqtt, observation, classWidthMqtt);
                     });
 
             httpSet.stream()
-                    .map(d -> Double.parseDouble(d.toString()))
                     .distinct()
                     .forEach(observation -> {
-                        long observationFrequency = frequencyHttp.getCount(observation);
-                        int upperBoundary = (observation > classWidthHttp)
-                                ? Math.multiplyExact( (int) Math.ceil(observation / classWidthHttp), classWidthHttp)
-                                : classWidthHttp;
-                        int lowerBoundary = (upperBoundary > classWidthHttp)
-                                ? Math.subtractExact(upperBoundary, classWidthHttp)
-                                : 0;
-                        String bin = String.format("%03d", lowerBoundary) + "-" + String.format("%03d", upperBoundary);
-
-                        updateDistributionMap(distributionMapHttp, lowerBoundary, bin, observationFrequency, classWidthHttp);
+                        updateDistributionMap(distributionMapHttp, frequencyHttp, observation, classWidthHttp);
                     });
 
             CategoryChart chartMQTT = chartBuilder("MQTT to MQTT time distribution");
             CategoryChart chartHTTP = chartBuilder("MQTT to HTTP time distribution");
-
 
             List yData = new ArrayList();
             yData.addAll(distributionMapMqtt.values());
@@ -154,30 +144,22 @@ public class Application {
             for (int i = 0; i < mqttSet.size(); i++) {
                 sumMqtt += mqttSet.get(i);
                 sumHttp += httpSet.get(i);
-                if(mqttSet.get(i) >maxMqtt)
-                    maxMqtt = mqttSet.get(i);
-                if(httpSet.get(i) >maxHttp)
-                    maxHttp = httpSet.get(i);
-                if(mqttSet.get(i) <minMqtt)
-                    minMqtt = mqttSet.get(i);
-                if(httpSet.get(i) <minHttp)
-                    minHttp = httpSet.get(i);
             }
             double meanHttp = sumHttp / requestsNb;
-            double meanMqtt = sumMqtt/ requestsNb;
+            double meanMqtt = sumMqtt / requestsNb;
             for (int i = 0; i < mqttSet.size(); i++) {
-                stdvHttp = stdvHttp+(httpSet.get(i)-meanHttp)*(httpSet.get(i)-meanHttp);
-                stdvMqtt = stdvMqtt+(mqttSet.get(i)-meanMqtt)*(mqttSet.get(i)-meanMqtt);
+                stdvHttp = stdvHttp + (httpSet.get(i) - meanHttp) * (httpSet.get(i) - meanHttp);
+                stdvMqtt = stdvMqtt + (mqttSet.get(i) - meanMqtt) * (mqttSet.get(i) - meanMqtt);
             }
-            stdvHttp = Math.sqrt(stdvHttp/requestsNb);
-            stdvMqtt = Math.sqrt(stdvMqtt/requestsNb);
+            stdvHttp = Math.sqrt(stdvHttp / requestsNb);
+            stdvMqtt = Math.sqrt(stdvMqtt / requestsNb);
 
             System.out.println("The mean time for cloud.iO to route an MQTT publish to MQTT subscribe for " +
                     requestsNb + " requests is: " + meanMqtt + "ms" +
-                    "\n min = "+minMqtt+"ms, max = "+""+maxMqtt+"ms, standard deviation = "+ stdvMqtt+"ms");
+                    "\n min = " + minMqtt + "ms, max = " + "" + maxMqtt + "ms, standard deviation = " + stdvMqtt + "ms");
             System.out.println("The mean time for the cloud.iO to route an MQTT publish to HTTP longpoll for " +
                     requestsNb + " requests is: " + meanHttp + "ms" +
-                    "\n min = "+minHttp+"ms, max = "+maxHttp+"ms, standard deviation = "+ stdvHttp+"ms");
+                    "\n min = " + minHttp + "ms, max = " + maxHttp + "ms, standard deviation = " + stdvHttp + "ms");
 
 
         } catch (Exception e) {
@@ -185,22 +167,40 @@ public class Application {
         }
     }
 
-    private static void updateDistributionMap(Map distributionMap, int lowerBoundary, String bin, long observationFrequency, int classWidth) {
-        int prevLowerBoundary = (lowerBoundary > classWidth) ? lowerBoundary - classWidth : 0;
-        String prevBin = String.format("%03d", prevLowerBoundary) + "-" + String.format("%03d", lowerBoundary) ;
-        if(!distributionMap.containsKey(prevBin))
-            distributionMap.put(prevBin, 0);
+    private static void updateDistributionMap(Map distributionMap, Frequency frequency, Double observation, int classWidth) {
+        double observationFrequency = frequency.getCount(observation);
+        int upperBoundary = (observation > classWidth)
+                ? Math.multiplyExact((int) Math.ceil(observation / classWidth), classWidth)
+                : classWidth;
+        int lowerBoundary = (upperBoundary > classWidth)
+                ? Math.subtractExact(upperBoundary, classWidth)
+                : 0;
+        String bin = lowerBoundary + "-" + upperBoundary;
 
-        if(!distributionMap.containsKey(bin)) {
+        if (!distributionMap.containsKey(bin))
             distributionMap.put(bin, observationFrequency);
-        }
         else {
-            long oldFrequency = Long.parseLong(distributionMap.get(bin).toString());
+            double oldFrequency = (Double) distributionMap.get(bin);
             distributionMap.replace(bin, oldFrequency + observationFrequency);
         }
     }
 
-    private static CategoryChart chartBuilder(String title){
+    private static void initDistributionMap(int min, int max, int classWidth, Map distributionMap) {
+        for (int i = min; i <= (max + classWidth); i++) {
+            int upperBoundary = (i > classWidth)
+                    ? Math.multiplyExact((int) Math.ceil(i / classWidth), classWidth)
+                    : classWidth;
+            int lowerBoundary = (upperBoundary > classWidth)
+                    ? Math.subtractExact(upperBoundary, classWidth)
+                    : 0;
+
+            String bin = lowerBoundary + "-" + upperBoundary;
+            if (!distributionMap.containsKey(bin))
+                distributionMap.put(bin, 0d);
+        }
+    }
+
+    private static CategoryChart chartBuilder(String title) {
         CategoryChart chart = new CategoryChartBuilder().width(800).height(600)
                 .title(title)
                 .xAxisTitle("Time group [ms]")
@@ -211,5 +211,13 @@ public class Application {
         chart.getStyler().setAvailableSpaceFill(0.99);
         chart.getStyler().setOverlapped(true);
         return chart;
+    }
+
+    public static double round(double value, int places) {
+        if (places < 0) throw new IllegalArgumentException();
+
+        BigDecimal bd = BigDecimal.valueOf(value);
+        bd = bd.setScale(places, RoundingMode.HALF_UP);
+        return bd.doubleValue();
     }
 }
